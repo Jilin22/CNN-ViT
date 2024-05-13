@@ -8,7 +8,6 @@ import torch.utils.checkpoint as checkpoint
 from einops import rearrange, repeat
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 import os.path as osp
-from basicsr.utils import tensor2img
 import cv2
 
 def window_partition(x, win_size, dilation_rate=1):
@@ -859,28 +858,3 @@ class CNN_ViT(nn.Module):
         # Output Projection
         flare, output = self.output_proj(deconv3, y_ori_res)
         return flare, output
-
-
-class DflareModel:
-    def __init__(self):
-        self.model = MyUformer().cuda().eval()
-        exps_dir = r"F:/07_Research/Flare7K/Flare7K/experiments"
-        exp_name = "0003_MyUformer_e32_b4_titan"
-        weight_name = "network_latest.pth"
-
-        weight_path = osp.join(exps_dir, exp_name, 'models', weight_name)
-
-        self.model.load_state_dict(torch.load(weight_path)['params'])
-        self.t = T.ToTensor()
-
-    def df(self, img):
-        h, w, c = img.shape
-        img = cv2.resize(img, (512, 512))
-        tensor_input = self.t(img).cuda().unsqueeze(0)
-        with torch.no_grad():
-            flare_hat, output = self.model(tensor_input)
-
-        deflare = tensor2img(output)
-        deflare = cv2.resize(deflare, (h, w))
-        return deflare
-
