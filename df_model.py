@@ -3,12 +3,10 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision.transforms as T
 import torch.utils.checkpoint as checkpoint
 from einops import rearrange, repeat
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
-import os.path as osp
-import cv2
+
 
 def window_partition(x, win_size, dilation_rate=1):
     B, H, W, C = x.shape
@@ -88,12 +86,6 @@ class SepConv2d(torch.nn.Module):
         x = self.pointwise(x)
         return x
 
-    def flops(self, H, W):
-        flops = 0
-        flops += H * W * self.in_channels * self.kernel_size ** 2 / self.stride ** 2
-        flops += H * W * self.in_channels * self.out_channels
-        return flops
-
 
 class ConvProjection(nn.Module):
     def __init__(self, dim, heads=8, dim_head=64, kernel_size=3, q_stride=1, k_stride=1, v_stride=1, dropout=0.,
@@ -125,13 +117,6 @@ class ConvProjection(nn.Module):
         v = rearrange(v, 'b (h d) l w -> b h (l w) d', h=h)
         return q, k, v
 
-    def flops(self, H, W):
-        flops = 0
-        flops += self.to_q.flops(H, W)
-        flops += self.to_k.flops(H, W)
-        flops += self.to_v.flops(H, W)
-        return flops
-
 
 class LinearProjection(nn.Module):
     def __init__(self, dim, heads=8, dim_head=64, dropout=0., bias=True):
@@ -151,10 +136,6 @@ class LinearProjection(nn.Module):
         q = q[0]
         k, v = kv[0], kv[1]
         return q, k, v
-
-    def flops(self, H, W):
-        flops = H * W * self.dim * self.inner_dim * 3
-        return flops
 
 
 class LinearProjection_Concat_kv(nn.Module):
@@ -177,12 +158,6 @@ class LinearProjection_Concat_kv(nn.Module):
         k = torch.cat((k_d, k_e), dim=2)
         v = torch.cat((v_d, v_e), dim=2)
         return q, k, v
-
-    def flops(self, H, W):
-        flops = H * W * self.dim * self.inner_dim * 5
-        return flops
-
-    #########################################
 
 
 class WindowAttention(nn.Module):
@@ -264,29 +239,6 @@ class WindowAttention(nn.Module):
     def extra_repr(self) -> str:
         return f'dim={self.dim}, win_size={self.win_size}, num_heads={self.num_heads}'
 
-    def flops(self, H, W):
-        # calculate flops for 1 window with token length of N
-        # print(N, self.dim)
-        flops = 0
-        N = self.win_size[0] * self.win_size[1]
-        nW = H * W / N
-        # qkv = self.qkv(x)
-        # flops += N * self.dim * 3 * self.dim
-        flops += self.qkv.flops(H, W)
-        # attn = (q @ k.transpose(-2, -1))
-        if self.token_projection != 'linear_concat':
-            flops += nW * self.num_heads * N * (self.dim // self.num_heads) * N
-            #  x = (attn @ v)
-            flops += nW * self.num_heads * N * N * (self.dim // self.num_heads)
-        else:
-            flops += nW * self.num_heads * N * (self.dim // self.num_heads) * N * 2
-            #  x = (attn @ v)
-            flops += nW * self.num_heads * N * N * 2 * (self.dim // self.num_heads)
-        # x = self.proj(x)
-        flops += nW * N * self.dim * self.dim
-        print("W-MSA:{%.2f}" % (flops / 1e9))
-        return flops
-
 
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
@@ -308,15 +260,6 @@ class Mlp(nn.Module):
         x = self.fc2(x)
         x = self.drop(x)
         return x
-
-    def flops(self, H, W):
-        flops = 0
-        # fc1
-        flops += H * W * self.in_features * self.hidden_features
-        # fc2
-        flops += H * W * self.hidden_features * self.out_features
-        print("MLP:{%.2f}" % (flops / 1e9))
-        return flops
 
 
 class LeFF(nn.Module):
@@ -506,9 +449,9 @@ class BasicUformerLayer(nn.Module):
         return x
 
 
-class Downsample2(nn.Module):
+class Downsample(nn.Module):
     def __init__(self, in_channel, out_channel):
-        super(Downsample2, self).__init__()
+        super().__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(in_channel, out_channel, kernel_size=3, stride=1, padding=1),
             nn.AvgPool2d(2, stride=2),
@@ -623,7 +566,7 @@ class CNN_ViT(nn.Module):
                  token_projection='linear',
                  token_mlp='ffn',
                  se_layer=False,
-                 dowsample=Downsample2,
+                 dowsample=Downsample,
                  upsample=Upsample, **kwargs):
         super().__init__()
         in_chans = img_ch
